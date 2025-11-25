@@ -1,0 +1,307 @@
+name: MLOps CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  # Job 1: Code Quality & Linting
+  code-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 black isort
+      
+      - name: Lint with flake8
+        run: |
+          # Stop the build if there are Python syntax errors or undefined names
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          # Exit-zero treats all errors as warnings
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+      
+      - name: Check code formatting with black
+        run: |
+          black --check .
+      
+      - name: Check import order with isort
+        run: |
+          isort --check-only .
+
+  # Job 2: Run Tests
+  test:
+    runs-on: ubuntu-latest
+    needs: code-quality
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+      
+      - name: Run unit tests
+        run: |
+          pytest tests/ --cov=. --cov-report=xml --cov-report=term
+      
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          flags: unittests
+
+  # Job 3: Train Model
+  train-model:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Download dataset
+        run: |
+          # If dataset is not in repo, download it
+          if [ ! -f "Telco-Customer-Churn.csv" ]; then
+            echo "Dataset not found locally, would download from source"
+            # wget <dataset_url> -O Telco-Customer-Churn.csv
+          fi
+      
+      - name: Train model
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+        run: |
+          python train.py
+      
+      - name: Upload training artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: training-artifacts
+          path: |
+            mlruns/
+            mlflow.db
+
+  # Job 4: Validate Model
+  validate-model:
+    runs-on: ubuntu-latest
+    needs: train-model
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Download training artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: training-artifacts
+      
+      - name: Run model validation
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+        run: |
+          python model_validation.py "models:/ChurnPredictor/latest"
+      
+      - name: Upload validation report
+        uses: actions/upload-artifact@v3
+        with:
+          name: validation-report
+          path: validation_report.txt
+
+  # Job 5: Deploy to Staging
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: validate-model
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: staging
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Deploy to Streamlit Cloud (Staging)
+        id: deploy
+        run: |
+          echo "🚀 Deploying to staging environment..."
+          # Streamlit Cloud auto-deploys from GitHub
+          echo "url=https://staging-churn-predictor.streamlit.app" >> $GITHUB_OUTPUT
+      
+      - name: Notify deployment
+        run: |
+          echo "✅ Deployed to staging: ${{ steps.deploy.outputs.url }}"
+
+  # Job 6: Deploy to Production (Manual Approval)
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Download training artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: training-artifacts
+      
+      - name: Promote model to Production
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+        run: |
+          python -c "
+          import mlflow
+          from mlflow.tracking import MlflowClient
+          
+          client = MlflowClient()
+          
+          # Get latest model version
+          model_name = 'ChurnPredictor'
+          latest_versions = client.get_latest_versions(model_name, stages=['None', 'Staging'])
+          
+          if latest_versions:
+              version = latest_versions[0].version
+              client.transition_model_version_stage(
+                  name=model_name,
+                  version=version,
+                  stage='Production',
+                  archive_existing_versions=True
+              )
+              print(f'✅ Promoted model version {version} to Production')
+          "
+      
+      - name: Deploy to Streamlit Cloud (Production)
+        id: deploy
+        run: |
+          echo "🚀 Deploying to production environment..."
+          echo "url=https://churn-predictor.streamlit.app" >> $GITHUB_OUTPUT
+      
+      - name: Notify deployment
+        run: |
+          echo "✅ Deployed to production: ${{ steps.deploy.outputs.url }}"
+      
+      - name: Create release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ github.run_number }}
+          release_name: Release v${{ github.run_number }}
+          body: |
+            ## 🚀 Production Deployment
+            
+            **Model Details:**
+            - Training run: ${{ github.run_number }}
+            - Commit: ${{ github.sha }}
+            - Deployed: ${{ steps.deploy.outputs.url }}
+            
+            **Validation Status:** ✅ PASSED
+            
+            See attached artifacts for validation reports.
+          draft: false
+          prerelease: false
+
+  # Job 7: Monitoring & Alerts
+  monitor:
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Check model drift
+        run: |
+          python -c "
+          import pandas as pd
+          from pathlib import Path
+          import json
+          
+          log_file = Path('prediction_logs.jsonl')
+          
+          if log_file.exists():
+              logs = []
+              with open(log_file, 'r') as f:
+                  for line in f:
+                      if line.strip():
+                          logs.append(json.loads(line))
+              
+              if logs:
+                  df = pd.DataFrame(logs)
+                  recent_prob = df.tail(100)['probability'].mean()
+                  baseline_prob = df.head(100)['probability'].mean()
+                  drift = abs(recent_prob - baseline_prob)
+                  
+                  print(f'📊 Drift Check:')
+                  print(f'   Baseline: {baseline_prob:.2%}')
+                  print(f'   Recent: {recent_prob:.2%}')
+                  print(f'   Drift: {drift:.2%}')
+                  
+                  if drift > 0.1:
+                      print('⚠️ WARNING: Model drift detected!')
+                      exit(1)
+                  else:
+                      print('✅ No significant drift detected')
+              else:
+                  print('ℹ️ No prediction logs available yet')
+          else:
+              print('ℹ️ Prediction log file not found')
+          "
+      
+      - name: Send notification
+        if: always()
+        run: |
+          echo "📧 Pipeline completed: ${{ job.status }}"
+          # Add Slack/Email notification here
+          # curl -X POST ${{ secrets.SLACK_WEBHOOK }} -d '{"text":"Pipeline status: ${{ job.status }}"}'

@@ -1,0 +1,7 @@
+Mlops_env/
+mlruns/
+__pycache__/
+.git/
+.gitignore
+README.md
+*.png
