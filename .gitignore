@@ -39,7 +39,7 @@ churn_pipeline.pkl
 model_threshold.json
 churn_app.tar
 prediction_logs.jsonl
-*.csv
+# *.csv (Commented out to allow dataset)
 
 # IDE
 .vscode/
