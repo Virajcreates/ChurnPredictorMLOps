@@ -35,8 +35,8 @@ mlruns/
 mlflow.db
 
 # Project Specific
-churn_pipeline.pkl
-model_threshold.json
+# churn_pipeline.pkl
+# model_threshold.json
 churn_app.tar
 prediction_logs.jsonl
 # *.csv (Commented out to allow dataset)
