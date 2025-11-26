@@ -1,0 +1,54 @@
+name: Automated Retraining Pipeline
+
+on:
+  # Manual trigger button in GitHub Actions tab
+  workflow_dispatch:
+  # Scheduled run (e.g., every Sunday at midnight UTC)
+  schedule:
+    - cron: '0 0 * * 0'
+
+jobs:
+  retrain-model:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required to push changes back to the repo
+
+    steps:
+      # 1. Checkout the code
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # 2. Set up Python
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      # 3. Install Dependencies
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 4. Run Training Script
+      - name: Train Model
+        run: |
+          echo "🚀 Starting Model Training..."
+          python train.py
+          echo "✅ Training Complete."
+
+      # 5. Check for Changes and Commit
+      - name: Commit and Push if Model Changed
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Check if churn_pipeline.pkl or model_threshold.json changed
+          if [[ -n $(git status --porcelain churn_pipeline.pkl model_threshold.json) ]]; then
+            echo "✨ Model has improved/changed. Committing new version..."
+            git add churn_pipeline.pkl model_threshold.json optimal_threshold.json
+            git commit -m "🤖 Auto-retrain: Updated model pipeline and threshold [skip ci]"
+            git push
+          else
+            echo "No significant changes in model. Skipping commit."
+          fi
