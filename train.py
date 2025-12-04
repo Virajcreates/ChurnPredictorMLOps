@@ -84,6 +84,14 @@ def get_preprocessor(numeric_features, categorical_features) -> ColumnTransforme
 
 def tune_model(name: str, pipeline: Pipeline, param_dist: Dict[str, Any], X_train, y_train) -> Dict[str, Any]:
     print(f"\n🔍 Tuning {name}...")
+    # DEBUG: Check versions and classifier status in CI
+    from sklearn.base import is_classifier
+    import xgboost
+    import sklearn
+    print(f"DEBUG: XGBoost version: {xgboost.__version__}")
+    print(f"DEBUG: Scikit-learn version: {sklearn.__version__}")
+    print(f"DEBUG: is_classifier(pipeline): {is_classifier(pipeline)}")
+    
     search = RandomizedSearchCV(
         pipeline,
         param_distributions=param_dist,
