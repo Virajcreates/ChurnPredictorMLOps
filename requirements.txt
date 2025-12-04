@@ -14,7 +14,7 @@ matplotlib
 statsmodels
 pyarrow
 rich
-xgboost==1.7.6
+xgboost==2.0.3
 lightgbm
 catboost
 imbalanced-learn
